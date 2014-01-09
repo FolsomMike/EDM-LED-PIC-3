@@ -111,20 +111,30 @@
 
 ; Cutting Current Pulse Controller Values (cycle width and duty cycle)
 ;
-; with oscillator frequency of 16 Mhz and Timer 2 prescaler set to 4, each count of PWM_PERIOD
-; equals 1uS of period
+; with oscillator frequency of 16 Mhz and Timer 2 prescaler set to 4:
+;
+; each count of PWM_PERIOD_DEFAULT equals 1uS of period with an offset of +1
+;
+;    period uS = (PWM_PERIOD_DEFAULT + 1) * 1 uS
+;
+; each count of PWM_DUTY_CYCLE_LO_BYTE_DEFAULT:PWM_DUTY_CYCLE_LO_BYTE_DEFAULT equals 0.25 uS
+;  for the high pulse width -- note that signal is inverted before it reaches testpoing J23 so this
+;  is actually a low pulse at that point
+;
+;   pulse width uS = PWM_DUTY_CYCLE_LO_BYTE_DEFAULT:PWM_DUTY_CYCLE_LO_BYTE_DEFAULT * 0.25 uS
+;
 
+I2C_SLAVE_ADDR                      EQU     b'10100100'
 
-I2C_SLAVE_ADDR              EQU     b'10100100'
+PWM_PERIOD_DEFAULT                  EQU  .217       ; gives 218 uS PWM period
+                                                    ; period uS = (PWM_PERIOD + 1) * 1 uS
 
-PWM_PERIOD EQU  .218
+PWM_DUTY_CYCLE_HI_BYTE_DEFAULT      EQU     0x00    ; 00:b8 gives 46 uS PWM high pulse width
+PWM_DUTY_CYCLE_LO_BYTE_DEFAULT      EQU     0xb8    ; (high:lo) * 0.25 uS = high pulse width
+                                                    ; note that signal is inverted befor it reaches
+                                                    ; testpoint J23
 
-PWM_DUTY_CYLE_HIGH_BITS     EQU     0x2c    ;debug mks -- remove this
-PWM_DUTY_CYLE_LOW_BITS      EQU     0x80    ;debug mks -- remove this
-
-PWM_DUTY_CYLE_HIGH_BYTE     EQU     0x00
-PWM_DUTY_CYLE_LOW_BYTE      EQU     0x2e
-
+PWM_POLARITY_DEFAULT                EQU 0x00
 
 ; LED PIC Commands
 
@@ -139,7 +149,7 @@ LEDPIC_SET_RESET                EQU 0xff    ; resets to a known state
 ;--------------------------------------------------------------------------------------------------
 ; Configurations, etc. for the Assembler Tools and the PIC
 
-;	LIST p = PIC16F648a	;select the processor
+	LIST p = PIC16F1459	;select the processor
 
     errorlevel  -306 ; Suppresses Message[306] Crossing page boundary -- ensure page bits are set.
 
@@ -491,7 +501,7 @@ setupCuttingCurrentPWM:
     clrf    PWM1CON
 
     banksel PR2             ; period of the cycle
-    movlw   PWM_PERIOD
+    movlw   PWM_PERIOD_DEFAULT
     movwf   PR2
 
     call    setPWM1DCToDefaults     ; set value of PWM1DCH and PWM1DCH duty cycle time registers
@@ -533,10 +543,10 @@ setPWM1DCToDefaults:
 
     banksel scratch0
 
-    movlw   PWM_DUTY_CYLE_LOW_BYTE
+    movlw   PWM_DUTY_CYCLE_LO_BYTE_DEFAULT
     movwf   scratch1
 
-    movlw   PWM_DUTY_CYLE_HIGH_BYTE
+    movlw   PWM_DUTY_CYCLE_HI_BYTE_DEFAULT
     movwf   scratch2
 
     goto    setPWM1DC
@@ -782,22 +792,41 @@ setupI2CSlave7BitMode:
 
 setCurrentLEDArray:
 
-    banksel CURRENT_LED_LATCH_P
+    banksel LEDS
+
+    ; apply appropriate bits in WREG to port latch
+    ; cannot write entire WREG to LATC as only some of the bits are LEDs
+    ; and others have different functions
+
+    ; clear all LED outputs
+
+    bcf     LED0_P, LED0
+    bcf     LED1_P, LED1
+    bcf     LED2_P, LED2
+    bcf     LED3_P, LED3
+    bcf     LED4_P, LED4
+
+    ;set each LED output which has corresponding bit set in WREG
+
+    btfsc   WREG,LED0
+    bsf     LED0_P, LED0
+    btfsc   WREG,LED1
+    bsf     LED1_P, LED1
+    btfsc   WREG,LED2
+    bsf     LED2_P, LED2
+    btfsc   WREG,LED3
+    bsf     LED3_P, LED3
+    btfsc   WREG,LED4
+    bsf     LED4_P, LED4
 
     ; when LATCH ENABLE input is HIGH, the Q outputs
     ; will follow the D inputs. When the LATCH ENABLE goes
     ; LOW, data at the D inputs will be retained
 
     ; latch high (outputs follow inputs)
-
     bsf     CURRENT_LED_LATCH_P, CURRENT_LED_LATCH
 
-    ; apply value to port latch
-
-    movwf   LEDS
-
-    ; latches low to lock in data
-
+    ; latch low to lock in data
     bcf     CURRENT_LED_LATCH_P, CURRENT_LED_LATCH
 
     return
@@ -818,22 +847,41 @@ setCurrentLEDArray:
 
 setVoltageLEDArray:
 
-    banksel VOLTAGE_LED_LATCH_P
+    banksel LEDS
+
+    ; apply appropriate bits in WREG to port latch
+    ; cannot write entire WREG to LATC as only some of the bits are LEDs
+    ; and others have different functions
+
+    ; clear all LED outputs
+
+    bcf     LED0_P, LED0
+    bcf     LED1_P, LED1
+    bcf     LED2_P, LED2
+    bcf     LED3_P, LED3
+    bcf     LED4_P, LED4
+
+    ;set each LED output which has corresponding bit set in WREG
+
+    btfsc   WREG,LED0
+    bsf     LED0_P, LED0
+    btfsc   WREG,LED1
+    bsf     LED1_P, LED1
+    btfsc   WREG,LED2
+    bsf     LED2_P, LED2
+    btfsc   WREG,LED3
+    bsf     LED3_P, LED3
+    btfsc   WREG,LED4
+    bsf     LED4_P, LED4
 
     ; when LATCH ENABLE input is HIGH, the Q outputs
     ; will follow the D inputs. When the LATCH ENABLE goes
     ; LOW, data at the D inputs will be retained
 
     ; latch high (outputs follow inputs)
-
     bsf     VOLTAGE_LED_LATCH_P, VOLTAGE_LED_LATCH
 
-    ; apply value to port latch
-
-    movwf   LEDS
-
-    ; latches low to lock in data
-
+    ; latch low to lock in data
     bcf     VOLTAGE_LED_LATCH_P, VOLTAGE_LED_LATCH
 
     return
@@ -1381,6 +1429,45 @@ handleTimer0Interrupt:
     goto    endISR
 
 ; end of handleTimer0Interrupt
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; reallyBigDelay
+;
+; Delays for a second or two.
+;
+
+reallyBigDelay:
+
+    banksel scratch6
+
+    movlw   .50
+    movwf   scratch6
+
+rbd1:
+
+    movlw   .255
+    movwf   scratch7
+
+rbd2:
+
+    movlw   .255
+    movwf   scratch8
+
+rbd3:
+
+    decfsz  scratch8,F
+    goto    rbd3
+
+    decfsz  scratch7,F
+    goto    rbd2
+
+    decfsz  scratch6,F
+    goto    rbd1
+
+    return
+
+; end of reallyBigDelay
 ;--------------------------------------------------------------------------------------------------
 
     END
