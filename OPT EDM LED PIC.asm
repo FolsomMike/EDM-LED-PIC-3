@@ -111,16 +111,27 @@
 
 ; Cutting Current Pulse Controller Values (cycle width and duty cycle)
 ;
-; with Timer 2 prescaler set to 4, each count of PWM_PERIOD equals 1uS of period
+; with oscillator frequency of 16 Mhz and Timer 2 prescaler set to 4, each count of PWM_PERIOD
+; equals 1uS of period
+
+
+I2C_SLAVE_ADDR              EQU     b'10100100'
 
 PWM_PERIOD EQU  .218
 
-; debug mks -- needs to be high byte and low byte and then shift right to place in the
-; timer 2 reload register
+PWM_DUTY_CYLE_HIGH_BITS     EQU     0x2c    ;debug mks -- remove this
+PWM_DUTY_CYLE_LOW_BITS      EQU     0x80    ;debug mks -- remove this
 
-PWM_DUTY_CYLE_HIGH_BITS     EQU     0x2c
-PWM_DUTY_CYLE_LOW_BITS      EQU     0x80
+PWM_DUTY_CYLE_HIGH_BYTE     EQU     0x00
+PWM_DUTY_CYLE_LOW_BYTE      EQU     0x2e
 
+
+; LED PIC Commands
+
+LEDPIC_SET_LEDS                 EQU 0x00    ; sets the on/off states of the LED arrays
+LEDPIC_SET_PWM                  EQU 0x01    ; sets the PWM values
+LEDPIC_START                    EQU 0x02    ; starts normal operation
+LEDPIC_SET_RESET                EQU 0xff    ; resets to a known state
 
 ; end of Defines
 ;--------------------------------------------------------------------------------------------------
@@ -194,6 +205,11 @@ PWM_DUTY_CYLE_LOW_BITS      EQU     0x80
 ;JOG_DWN_SW_P    EQU     PORTB
 
 ; Port C
+;
+; NOTE: For all write operations, the port's latch is written to in order to avoid
+; read-modify-write issues sometimes caused by writing to the port's pins.
+
+LEDS                EQU     LATC
 
 LED0_P              EQU     LATC
 LED0                EQU     RC0
@@ -221,8 +237,7 @@ VOLTAGE_LED_LATCH   EQU     RC7
 
 ; bits in flags variable
 
-;EXTENDED_MODE   EQU     0x0
-;CUT_STARTED     EQU     0x1
+HANDLE_LED_ARRAYS   EQU     0x0     ; if set, A/D inputs are displayed on the LED arrays
 
 ; end of Software Definitions
 ;--------------------------------------------------------------------------------------------------
@@ -240,7 +255,7 @@ VOLTAGE_LED_LATCH   EQU     RC7
 
  cblock 0x20                ; starting address
 
-    flags                   ; bit 0: 0 = ?? 1 = ??
+    flags                   ; bit 0: 0 = skip code 1 = display A/D inputs on LED arrays
                             ; bit 1: 0 = 
                             ; bit 2: 0 = 
                             ; bit 3: 0 = 
@@ -338,18 +353,17 @@ VOLTAGE_LED_LATCH   EQU     RC7
 
 start:
 
-    call    setup           ; preset variables and configure hardware
+    call    setup               ; preset variables and configure hardware
 
 mainLoop:
 
-    bcf     LED3_P,LED3
-    nop
-    nop
-    nop
-    bsf     LED3_P,LED3
-    nop
-    nop
-    nop
+    call    handleI2CCommand    ; checks for incoming command on I2C bus
+
+
+    banksel flags
+
+    btfsc   flags,HANDLE_LED_ARRAYS ; display A/D inputs on LED arrays
+    call    handleLEDArrays
 
     goto    mainLoop
     
@@ -373,6 +387,8 @@ setup:
     call    setupPortC      ; prepare Port C  for I/O
 
     call    initializeOutputs
+
+    call    setupI2CSlave7BitMode ; prepare the I2C serial bus for use
 
     call    setupCuttingCurrentPWM
 
@@ -404,8 +420,8 @@ setup:
 ; enable the interrupts
 
 ;	bsf	    INTCON,PEIE	    ; enable peripheral interrupts (Timer0 is a peripheral)
-;    bsf     INTCON,T0IE     ; enable TMR0 interrupts
-;    bsf     INTCON,GIE      ; enable all interrupts
+;   bsf     INTCON,T0IE     ; enable TMR0 interrupts
+;   bsf     INTCON,GIE      ; enable all interrupts
 
     return
 
@@ -420,45 +436,13 @@ setup:
 
 initializeOutputs:
 
-    banksel LATC
+    ;set LEDs to 0xaa and 0x55 to show that program has started
 
-    ; when LATCH ENABLE input is HIGH, the Q outputs
-    ; will follow the D inputs. When the LATCH ENABLE goes
-    ; LOW, data at the D inputs will be retained
+    movlw   0xaa
+    call    setCurrentLEDArray
 
-    ; latch high (outputs follow inputs)
-
-    bsf     CURRENT_LED_LATCH_P, CURRENT_LED_LATCH
-    bsf     VOLTAGE_LED_LATCH_P, VOLTAGE_LED_LATCH
-
-    ; turn on lower LEDs
-
-    bcf     LED0_P,LED0
-    bsf     LED1_P,LED1
-    bsf     LED2_P,LED2
-    bsf     LED3_P,LED3
-    bsf     LED4_P,LED4
-
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-    nop
-
-
-    ; latches low to lock in data
-
-    bcf     CURRENT_LED_LATCH_P, CURRENT_LED_LATCH
-    bcf     VOLTAGE_LED_LATCH_P, VOLTAGE_LED_LATCH
+    movlw   0x55
+    call    setVoltageLEDArray
 
     return
 
@@ -500,7 +484,6 @@ setupClock:
 ;
 ; Sets up the Pulse Width Modulator output to control the cutting current pulse.
 ;
-;
 
 setupCuttingCurrentPWM:
 
@@ -510,16 +493,8 @@ setupCuttingCurrentPWM:
     banksel PR2             ; period of the cycle
     movlw   PWM_PERIOD
     movwf   PR2
-       
-    ; upper byte plus lower two bits = 46 decimal
 
-    banksel PWM1DCH
-    movlw   PWM_DUTY_CYLE_HIGH_BITS
-    movwf   PWM1DCH
-
-    banksel PWM1DCL
-    movlw   PWM_DUTY_CYLE_LOW_BITS
-    movwf   PWM1DCL
+    call    setPWM1DCToDefaults     ; set value of PWM1DCH and PWM1DCH duty cycle time registers
 
     banksel PIR1
     bcf     PIR1, TMR2IF
@@ -530,22 +505,94 @@ setupCuttingCurrentPWM:
     ;    01 = Prescaler is 4
     ;    00 = Prescaler is 1
 
-    banksel T2CON                   ; use prescaler of 4
+    banksel T2CON                   ; use prescaler of 4 for Timer 2
     bsf     T2CON, T2CKPS0
     bcf     T2CON, T2CKPS1
 
-    bsf     T2CON, TMR2ON
+    bsf     T2CON, TMR2ON           ; turn on Timer 2
 
     banksel PWM1CON
     bsf     PWM1CON, PWM1EN         ; enable PWM module
     bsf     PWM1CON, PWM1OE         ; enable PWM 1 output pin (RC5)
 
-    banksel TRISC
+    banksel TRISC                   ; make Port C bit 5 an output -- this is the PWM pulse
     bcf     TRISC, TRISC5
 
     return
 
 ; end of setupCuttingCurrentPWM
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; setPWM1DCToDefaults
+;
+; Sets the value of the PWM module's duty cycle time registers to default values.
+;
+
+setPWM1DCToDefaults:
+
+    banksel scratch0
+
+    movlw   PWM_DUTY_CYLE_LOW_BYTE
+    movwf   scratch1
+
+    movlw   PWM_DUTY_CYLE_HIGH_BYTE
+    movwf   scratch2
+
+    goto    setPWM1DC
+
+; end of setPWM1DCToDefaults
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; setPWM1DC
+;
+; Sets the value of the PWM module's duty cycle time registers.
+;
+; PWM1DCH<7:0> are the upper 8 upper bits of the value and PWM1DCL<7:6> are the 2 lower bits. The
+; value to be stored is in the more common format of high byte and low byte, with the high byte
+; only having the two lower bits applicable. The value is rotated to place the two lower bits
+; in a byte and the upper 8 bits in another byte ready for the PWM1DC registers.
+;
+; original value in two bytes:      xx xxxxxxxx
+; modified value in two bytes:      xxxxxxxx xx
+;
+
+setPWM1DC:
+
+    clrf    scratch0
+
+    ; shift value right by two bits so lower two bits end up in upper bits of scratch0
+    ;       original value:         scratch2:scratch1
+    ;                                     xx:xxxxxxxx
+    ;       shifted value:          scratch1:scratch0
+    ;                               xxxxxxxx:xx
+
+    bcf     STATUS,C
+
+    rrf     scratch2,F          ; rotate first time through all three bytes
+    rrf     scratch1,F
+    rrf     scratch0,F
+
+    bcf     STATUS,C
+
+    rrf     scratch2,F          ; rotate second time through all three bytes
+    rrf     scratch1,F
+    rrf     scratch0,F
+
+    banksel scratch0            ; lower 2 bits -> PWM1DCL
+    movf    scratch0,W
+    banksel PWM1DCL
+    movwf   PWM1DCL
+
+    banksel scratch1            ; upper 8 bits -> PWM1DCH
+    movf    scratch1,W
+    banksel PWM1DCH
+    movwf   PWM1DCH
+
+    return
+
+; end of setPWM1DC
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
@@ -670,6 +717,615 @@ setupPortC:
     return
 
 ; end of setupPortC
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; handleLEDArrays
+;
+; Reads the A/D inputs for the current and voltage levels and displays them on the appropriate
+; LED arrays.
+;
+
+handleLEDArrays:
+
+
+    return
+
+; end of handleLEDArrays
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; setupI2CSlave7BitMode
+;
+; Sets the MASTER SYNCHRONOUS SERIAL PORT (MSSP) MODULE to the I2C Slave mode using the 7 bit
+; address mode.
+;
+; NOTE: RB4 and RB6 must have been configured elswhere as inputs for this mode.
+;
+
+setupI2CSlave7BitMode:
+
+    movlw   I2C_SLAVE_ADDR  ; set the I2C slave device address
+    banksel SSPADD
+    movwf   SSPADD
+    
+    movlw   0xff            ; bits <7:1> of SSPADD are used to match address
+    banksel SSPMSK          ; (bit <0> is ignored in 7 bit address mode)
+    movwf   SSPMSK
+
+    banksel SSPCON2         ; enable clock stretching -- upon receiving a byte this PIC will
+    bsf     SSPCON2,SEN     ; hold clock and halt further transmissions until CKP bit cleared
+
+    banksel SSPCON1
+    bcf	SSPCON1,SSP1M0		; SSPM = b0110 ~ I2C Slave mode
+    bsf	SSPCON1,SSP1M1
+    bsf	SSPCON1,SSP1M2
+    bcf	SSPCON1,SSP1M3
+
+    bsf	SSPCON1,SSPEN		;enables the MSSP module
+
+    return
+
+; end setupI2CSlave7BitMode
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; setCurrentLEDArray
+;
+; Sets the on/off states of the LEDs in the "Current" monitor array according to the value in
+; the W register.
+;
+; On entry:
+;
+; W register: on/off states of the LEDs in the array, 5 lsbs, 0=on;1=0ff
+;
+
+setCurrentLEDArray:
+
+    banksel CURRENT_LED_LATCH_P
+
+    ; when LATCH ENABLE input is HIGH, the Q outputs
+    ; will follow the D inputs. When the LATCH ENABLE goes
+    ; LOW, data at the D inputs will be retained
+
+    ; latch high (outputs follow inputs)
+
+    bsf     CURRENT_LED_LATCH_P, CURRENT_LED_LATCH
+
+    ; apply value to port latch
+
+    movwf   LEDS
+
+    ; latches low to lock in data
+
+    bcf     CURRENT_LED_LATCH_P, CURRENT_LED_LATCH
+
+    return
+
+; end of setCurrentLEDArray
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; setVoltageLEDArray
+;
+; Sets the on/off states of the LEDs in the "Voltage" monitor array according to the value in
+; the W register.
+;
+; On entry:
+;
+; W register: on/off states of the LEDs in the array, 5 lsbs, 0=on;1=0ff
+;
+
+setVoltageLEDArray:
+
+    banksel VOLTAGE_LED_LATCH_P
+
+    ; when LATCH ENABLE input is HIGH, the Q outputs
+    ; will follow the D inputs. When the LATCH ENABLE goes
+    ; LOW, data at the D inputs will be retained
+
+    ; latch high (outputs follow inputs)
+
+    bsf     VOLTAGE_LED_LATCH_P, VOLTAGE_LED_LATCH
+
+    ; apply value to port latch
+
+    movwf   LEDS
+
+    ; latches low to lock in data
+
+    bcf     VOLTAGE_LED_LATCH_P, VOLTAGE_LED_LATCH
+
+    return
+
+; end of setVoltageLEDArray
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; handleI2CCommand
+;
+; Checks to see if this PIC has received an ID byte via the I2C bus which matches its address.
+;
+; The I2C bus is set up to hold the clock and delay transmission by the master after each byte
+; is received. That allows this method to be checked in the normal thread instead of by an
+; interrupt as any response delays are not a problem as the transmission is halted.
+;
+
+handleI2CCommand:
+
+    ; check if SSP1IF flag set -- if so, matching address byte has been received
+    
+    ifndef debug               ; pretend flag set if in debug mode
+    banksel PIR1
+    btfss   PIR1, SSP1IF
+    return
+    endif
+
+    banksel SSPBUF
+    movf    SSPBUF,W            ; get incoming value; clears BF flag
+
+    call    clearSSP1IF         ; clear the I2C interrupt flag
+    call    setCKP              ; release the I2C clock line so master can send next byte
+
+; jump to handle receive or transmit request
+; if bit 0 of the address byte is 0, the master is sending and this PIC is receiving
+; if bit 1 is 1, the master is receiving and this PIC is sending
+
+    btfss   W,0
+    goto    handleI2CReceive
+    goto    handleI2CTransmit
+
+    return
+
+; end handleI2CCommand
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; handleI2CReceive
+;
+; Handles the receipt of data from the master on the I2C bus.
+;
+; The next byte read should be the command byte which determines the total number of bytes
+; expected.
+;
+
+handleI2CReceive:
+
+    call    waitForSSP1IFHighOrStop     ; wait for byte or stop condition to be received
+
+    btfss   STATUS,Z
+    return                              ; bail out if stop condition received
+
+    call    readI2CByteAndPrepForNext   ; get the byte just received
+
+    banksel scratch0
+    movwf   scratch0                    ; store the command byte
+
+; parse the command byte by comparing with each command
+
+    sublw   LEDPIC_SET_LEDS
+    btfsc   STATUS,Z
+    goto    setLEDsFromI2C
+
+    movf    scratch0,W
+    sublw   LEDPIC_SET_PWM
+    btfsc   STATUS,Z
+    goto    setPWMFromI2C
+
+    movf    scratch0,W
+    sublw   LEDPIC_START
+    btfsc   STATUS,Z
+    goto    doStartFromI2C
+
+    movf    scratch0,W
+    sublw   LEDPIC_SET_RESET
+    btfsc   STATUS,Z
+    goto    doReset
+
+    return
+
+; end handleI2CReceive
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; handleI2CTransmit
+;
+; Handles the transmission of data to the master on the I2C bus.
+;
+; The command byte specifying what data should be sent should have already been received in the
+; previous transmission from the master and stored in masterCommand variable.
+;
+
+handleI2CTransmit:
+
+    return                      ; bail out if stop condition received
+
+; end handleI2CTransmit
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; setLEDsFromI2C
+;
+; Sets the on/off state of the LEDs based on the values received via the I2C bus.
+;
+
+setLEDsFromI2C:
+
+    ; receive 2 data bytes from I2C -- one for each LED array
+
+    movlw   .2                      ; store 2 bytes from I2C
+    call    receiveBytesFromI2C
+
+    ; set state of "Current" red LED array to first received byte
+
+    banksel scratch3
+    movf    scratch3,W
+    call    setCurrentLEDArray
+
+    ; set state of "Voltage" green LED array to second received byte
+
+    banksel scratch4
+    movf    scratch4,W
+    call    setVoltageLEDArray
+
+    return
+
+; end setLEDsFromI2C
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; setPWMFromI2C
+;
+; Sets the registers controlling the PWM cutting current pulse control with values received via
+; the I2C bus.
+;
+; The data bytes from the master should be:
+;
+;    pwmDutyCycleHiByte      ; cutting current pulse controller duty cycle time
+;    pwmDutyCycleLoByte
+;    pwmPeriod               ; cutting current pulse controller period time
+;    pwmPolarity             ; polarity of the PWM output -- only lsb used
+;    pwmCheckSum             ; used to verify PWM values read from eeprom
+;
+; If the checksum does not validate, the PWM registers are not changed.
+;
+; The value of 1 is added to the checksum to prevent cases where the values are read as all zeroes
+; in error and would match the checksum of zero.
+;
+
+setPWMFromI2C:
+
+    movlw   .5                      ; store 2 bytes from I2C
+    call    receiveBytesFromI2C
+
+    ; validate the checksum
+
+    banksel scratch3
+
+    clrw                            ; calculate the checksum for all PWM values
+    addwf   scratch3,W
+    addwf   scratch4,W
+    addwf   scratch5,W
+    addwf   scratch6,W
+    addlw   1                       ; see note in function header
+
+    subwf   scratch7,W              ; compare calculated checksum with that read from I2C
+    btfss   STATUS,Z
+    return                          ; zero flag clear, checksum NOT matched, exit
+
+    ; checksum matched -- apply values
+
+    ; set the polarity of the PWM output
+
+    banksel scratch6
+    movf    scratch6,W          ; byte read from I2C bus
+
+    banksel PWM1CON
+    bcf     PWM1CON,PWM1POL     ; clear polarity bit
+    btfsc   WREG,0
+    bsf     PWM1CON,PWM1POL     ; set polarity bit if bit 0 of polarity byte is set
+
+    ; set the PWM cycle period
+
+    banksel scratch5
+    movf    scratch5,W          ; byte read from I2C bus
+    banksel PR2                 ; period of the cycle
+    movwf   PR2
+
+    ; set the PWM duty cycle
+
+    banksel scratch0
+
+    movf    scratch4,W          ; set up low byte of value
+    movwf   scratch1
+
+    movf    scratch3,W          ; set up high byte of value
+    movwf   scratch2
+
+    call    setPWM1DC           ; set value of PWM1DCH and PWM1DCH duty cycle time registers
+
+    return
+
+; end setPWMFromI2C
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; doStartFromI2C
+;
+; Sets flag to trigger execution of the normal operation code, such as displaying the A/D
+; inputs on the LED arrays, etc.
+;
+
+doStartFromI2C:
+
+    banksel flags
+
+    bsf     flags,HANDLE_LED_ARRAYS
+
+    return
+
+; end doStartFromI2C
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; doReset
+;
+; Places the PIC in known state.
+;
+
+doReset:
+
+    return
+
+; end doReset
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; receiveBytesFromI2C
+;
+; Receives a specified number of bytes from the I2C bus.
+; Normally, this number is equal to the number of bytes read unless the master
+; sends too few or too many.
+;
+; On entry:
+;  W register: the number of bytes to be stored
+;
+; Bytes will be read until a stop condition is received from the master -- only the number of bytes
+; specified in W will actually be stored.
+;
+; On exit:
+;  scratch1: The number of bytes actually stored (may be less than number of bytes specified to be
+;   read if master sends too few and may be less than the number of bytes actually read if master
+;   sends too many).
+;
+; scratch3-scratchx: the received bytes
+;
+; Other variable usage:
+;
+; Variable scratch0 is used to count down the number of bytes stored.
+; Variable scratch2 is used for control flags.
+;
+
+receiveBytesFromI2C:
+
+    banksel scratch0
+    movwf   scratch0                ; store number of bytes to record
+
+    clrf    scratch1                ; track number of bytes recorded
+    clrf    scratch2                ; clear control flags
+
+    movlw   scratch3                ; point to first byte of receive buffer
+    movwf   FSR0L
+
+rBFILoop1:
+
+    call    waitForSSP1IFHighOrStop     ; wait for byte or stop condition to be received
+
+    btfss   STATUS,Z
+    goto    cleanUpAndReturn            ; bail out when stop condition received
+
+    call    readI2CByteAndPrepForNext   ; get the byte just received
+
+    banksel scratch0
+
+    btfsc   scratch2,0                  ; if bit 0 set, expected number of bytes already stored
+    goto    skipByteStore               ;  more bytes will be read until stop condition received
+                                        ;  but they are not stored
+
+    ; store the byte in the buffer
+
+    movwi   FSR0++                      ; store in next buffer position
+
+    incf    scratch1,F                  ; count number of bytes stored
+
+    decfsz  scratch0,F                  ; check number of bytes to record
+    goto    rBFILoop1                   ; loop to read more bytes
+
+    bsf     scratch2,0                  ; set flag to prevent storing any more bytes
+                                        ; function will read and toss bytes until stop condition
+
+skipByteStore:
+
+    goto    rBFILoop1                   ; loop to read more bytes
+
+cleanUpAndReturn:
+
+    ; makes sure all flags are set/reset to enable data to be received
+
+    call    clearSSP1IF         ; clear the I2C interrupt flag
+    call    setCKP              ; release the I2C clock line so master can send next byte
+    call    clearSSPOV          ; clears the overflow bit to allow new data to be read
+
+    return
+
+; end receiveBytesFromI2C
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; readI2CByteAndPrepForNext
+;
+; Reads value from SSPBUF into W register, resets SSP1IF, and sets CKP to release I2C clock so
+; master can start sending the next byte.
+;
+; The last byte received is returned in W.
+;
+
+readI2CByteAndPrepForNext:
+
+    banksel SSPBUF
+    movf    SSPBUF,W            ; get incoming value; clears BF flag
+
+    call    clearSSP1IF         ; clear the I2C interrupt flag
+    call    setCKP              ; release the I2C clock line so master can send next byte
+    call    clearSSPOV          ; clears the overflow bit to allow new data to be read
+
+    return
+
+; end of readI2CByteAndPrepForNext
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; clearSSP1IF
+;
+; Sets the SSP1IF bit in register PIR1 to 0.
+;
+
+clearSSP1IF:
+
+    banksel PIR1
+    bcf     PIR1, SSP1IF
+
+    return
+
+; end of clearSSP1IF
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; waitForSSP1IFHigh
+;
+; Waits in a loop for SSP1IF bit in register PIR1 to go high.
+;
+
+waitForSSP1IFHigh:
+
+    ifdef debug       ; if debugging, don't wait for interrupt to be set high as the MSSP is not
+    return            ; simulated by the IDE
+    endif
+
+    banksel PIR1
+
+wfsh1:
+    btfss   PIR1, SSP1IF
+    goto    wfsh1
+
+    return
+
+; end of waitForSSP1IFHigh
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; waitForSSP1IFHighOrStop
+;
+; Waits in a loop for SSP1IF bit in register PIR1 to go high.
+;
+; On exit:
+;
+; If SSP1IF went high, W will be 0 and Z flag set.
+; If P (stop condition) went high, W will be 1 and Z flag cleared.
+;
+
+waitForSSP1IFHighOrStop:
+
+    ifdef debug       ; if debugging, don't wait for interrupt to be set high as the MSSP is not
+    goto  wfshosByteReceived    ; simulated by the IDE
+    endif
+
+
+wfshos1:
+
+    banksel PIR1
+    btfsc   PIR1, SSP1IF        ; check interrupt flag
+    goto    wfshosByteReceived  ; return if flag set
+
+    banksel SSP1STAT
+    btfsc   SSP1STAT, P         ; check stop condition received flag
+    goto    wfshosStopReceived  ; return if flag set
+
+    goto    wfshos1
+
+wfshosByteReceived:
+
+    clrw                        ; signal that byte received
+    addlw   0x00                ; (must use addlw to set Z bit)
+    return
+
+wfshosStopReceived:
+
+    clrw                        ; signal that stop condition received
+    addlw   0x01                ; (must use addlw to clear Z bit)
+    return
+
+; end of waitForSSP1IFHighOrStop
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; waitForSSP1IFHighThenClearIt
+;
+; Waits in a loop for SSP1IF bit in register PIR1 to go high and then clears that bit.
+;
+; The bit must be cleared at some point after it is set before performing most actions with the I2C
+; but. In most cases, it can be cleared immediately for which this function is useful.
+;
+; If the bit is not cleared before an operation, then checking the bit immediately after the
+; operation will make it appear that the operation completed immediately and the code will not
+; wait until the MSSP module sets the bit after actual completion.
+;
+
+waitForSSP1IFHighThenClearIt:
+
+    call    waitForSSP1IFHigh
+
+    call    clearSSP1IF
+
+    return
+
+; end of waitForSSP1IFHighThenClearIt
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; setCKP
+;
+; Sets the CKP bit in register SSPCON1 to 1.
+;
+; This will release the I2C bus clock so the master can transmit the next byte.
+;
+
+setCKP:
+
+    banksel SSPCON1
+    bsf     SSPCON1, CKP
+
+    return
+
+; end of setCKP
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; clearSSPOV
+;
+; Clears the MSSP overflow bit to allow new bytes to be read.
+;
+; The bit is set if a byte was received before the previous byte was read from the buffer.
+;
+
+clearSSPOV:
+
+    banksel SSP1CON1
+    bcf     SSP1CON1,SSPOV
+
+    return
+
+; end of clearSSPOV
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
