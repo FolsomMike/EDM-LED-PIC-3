@@ -365,6 +365,8 @@ start:
 
     call    setup               ; preset variables and configure hardware
 
+    call    flashLEDsUntilMasterPICConnects
+
 mainLoop:
 
     call    handleI2CCommand    ; checks for incoming command on I2C bus
@@ -446,12 +448,12 @@ setup:
 
 initializeOutputs:
 
-    ;set LEDs to 0xaa and 0x55 to show that program has started
+    ;turn off all LEDs
 
-    movlw   0xaa
+    movlw   0xff
     call    setCurrentLEDArray
 
-    movlw   0x55
+    movlw   0xff
     call    setVoltageLEDArray
 
     return
@@ -1432,9 +1434,65 @@ handleTimer0Interrupt:
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
+; flashLEDsUntilMasterPICConnects
+;
+; Flashes the LEDs until the Master PIC first communicates.
+;
+
+flashLEDsUntilMasterPICConnects:
+
+flumpc1:
+
+    ;set LEDs
+
+    movlw   0xaa
+    call    setCurrentLEDArray
+
+    movlw   0x55
+    call    setVoltageLEDArray
+
+    ; delay
+
+    banksel scratch6
+    movlw   .5
+    movwf   scratch6
+    call    rbd1
+
+    ;set LEDs
+
+    movlw   0x55
+    call    setCurrentLEDArray
+
+    movlw   0xaa
+    call    setVoltageLEDArray
+
+    ; delay
+
+    banksel scratch6
+    movlw   .5
+    movwf   scratch6
+    call    rbd1
+
+    ; check if SSP1IF flag set -- if so, Master PIC has sent a command
+
+    ifndef debug               ; pretend flag set if in debug mode
+    banksel PIR1
+    btfss   PIR1, SSP1IF
+    goto    flumpc1
+    endif
+
+    return
+
+; end of flashLEDsUntilMasterPICConnects
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
 ; reallyBigDelay
 ;
 ; Delays for a second or two.
+;
+; To adjust the delay, load scratch6 with any value and enter at rbd1.
+; In that case, use "banksel scratch6" before entering.
 ;
 
 reallyBigDelay:
