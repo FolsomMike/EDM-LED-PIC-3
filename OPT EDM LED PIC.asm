@@ -1279,7 +1279,7 @@ handleI2CCommand:
 ; if bit 0 of the address byte is 0, the master is sending and this PIC is receiving
 ; if bit 1 is 1, the master is receiving and this PIC is sending
 
-    btfss   W,0
+    btfss   WREG,0
     goto    handleI2CReceive
     goto    handleI2CTransmit
 
