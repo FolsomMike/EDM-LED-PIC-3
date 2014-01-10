@@ -206,13 +206,15 @@ LEDPIC_SET_RESET                EQU 0xff    ; resets to a known state
 
 ; Port A
 
-;SERIAL_IN_P     EQU     PORTA
-;SERIAL_IN       EQU     RA0         ; input ~ RA0 can only be input on PIC16f1459
+CURRENT_MONITOR_INPUT   EQU     RA4
 
 ; Port B
 
-;I2CSDA_LINE     EQU     RB4
-;JOG_DWN_SW_P    EQU     PORTB
+VOLTAGE_MONITOR_INPUT   EQU     RB5
+
+; pin used for debugging -- sometimes used as an output or input
+DEBUG_IO_P      EQU     LATB
+DEBUG_IO        EQU     RB7
 
 ; Port C
 ;
@@ -247,7 +249,25 @@ VOLTAGE_LED_LATCH   EQU     RC7
 
 ; bits in flags variable
 
-HANDLE_LED_ARRAYS   EQU     0x0     ; if set, A/D inputs are displayed on the LED arrays
+HANDLE_LED_ARRAYS   EQU     0x00     ; if set, A/D inputs are displayed on the LED arrays
+CURRENT_VOLTAGE_AD  EQU     0x01     ; specifies which input is to be converted next
+
+; values for A/D register ADCON0 to select channels and turn A/D on
+
+; Current Monitor input channel/pin: AN3/RA4
+SAMPLE_CURRENT_INPUT    EQU     b'00001101'
+
+; Voltage Monitor input channel/pin: AN11/RB5
+SAMPLE_VOLTAGE_INPUT    EQU     b'00101101'
+
+; Specify the subrange increment for each additional LED displayed in the arrays.
+; For example, if voltage input of 3.8V is to be full scale, this equates to
+; A/D value of 194 decimal when Vref if +5V.
+; Dividing 194 by 6 (5 possible LEDs on plus case of no LEDs on) gives
+; increment of 32.3 rounded down to 32.
+
+CURRENT_RANGE_INCREMENT    EQU     .32
+VOLTAGE_RANGE_INCREMENT    EQU     .32
 
 ; end of Software Definitions
 ;--------------------------------------------------------------------------------------------------
@@ -265,14 +285,20 @@ HANDLE_LED_ARRAYS   EQU     0x0     ; if set, A/D inputs are displayed on the LE
 
  cblock 0x20                ; starting address
 
-    flags                   ; bit 0: 0 = skip code 1 = display A/D inputs on LED arrays
-                            ; bit 1: 0 = 
+    flags                   ; bit 0: 0 = skip code; 1 = display A/D inputs on LED arrays
+                            ; bit 1: 0 = current A/D input; 1 = voltage A/D input
                             ; bit 2: 0 = 
                             ; bit 3: 0 = 
                             ; bit 4: 0 = 
                             ; bit 5: 0 = 
 							; bit 6: 0 = 
 							; bit 7: 0 = 
+
+    adTrigger               ; 0 = not ready; 1 = handle A/D input
+                            ; set by Timer0 interrupt to trigger the next A/D conversion
+                            ; cleared by handleADToLEDArrays
+                            ; an entire byte is used to avoid read-modify-write issues between the
+                            ; main thread and the interrupt thread
 
     scratch0                ; these can be used by any function
     scratch1
@@ -371,11 +397,10 @@ mainLoop:
 
     call    handleI2CCommand    ; checks for incoming command on I2C bus
 
-
     banksel flags
 
     btfsc   flags,HANDLE_LED_ARRAYS ; display A/D inputs on LED arrays
-    call    handleLEDArrays
+    call    handleADToLEDArrays
 
     goto    mainLoop
     
@@ -402,6 +427,8 @@ setup:
 
     call    setupI2CSlave7BitMode ; prepare the I2C serial bus for use
 
+    call    setupADConverter ; prepare A/D converter for use
+
     call    setupCuttingCurrentPWM
 
 ;start of hardware configuration
@@ -412,16 +439,16 @@ setup:
     clrf    INTCON          ; disable all interrupts
 
     banksel OPTION_REG
-    movlw   0x58
-    movwf   OPTION_REG      ; Option Register = 0x58   0101 1000 b
+    movlw   0x57
+    movwf   OPTION_REG      ; Option Register = 0x57   0101 0111 b
                             ; bit 7 = 0 : weak pull-ups are enabled by individual port latch values
                             ; bit 6 = 1 : interrupt on rising edge
                             ; bit 5 = 0 : TOCS ~ Timer 0 run by internal instruction cycle clock (CLKOUT ~ Fosc/4)
-                            ; bit 4 = 1 : TOSE ~ Timer 0 increment on high-to-low transition on RA4/T0CKI/CMP2 pin (not used here)
-							; bit 3 = 1 : PSA ~ Prescaler assigned to WatchDog; Timer0 will be 1:1 with Fosc/4
-                            ; bit 2 = 0 : Bits 2:0 control prescaler:
-                            ; bit 1 = 0 :    000 = 1:2 scaling for Timer0 (if assigned to Timer0)
-                            ; bit 0 = 0 :
+                            ; bit 4 = 1 : TOSE ~ Timer 0 increment on high-to-low transition on RA4/T0CKI/CMP2 pin (not applicable here)
+							; bit 3 = 0 : PSA ~ Prescaler assigned to Timer0
+                            ; bit 2 = 1 : Bits 2:0 control prescaler:
+                            ; bit 1 = 1 :    111 = 1:256 scaling for Timer0 (if assigned to Timer0)
+                            ; bit 0 = 1 :
     
 ;end of hardware configuration
 
@@ -431,9 +458,9 @@ setup:
 	
 ; enable the interrupts
 
-;	bsf	    INTCON,PEIE	    ; enable peripheral interrupts (Timer0 is a peripheral)
-;   bsf     INTCON,T0IE     ; enable TMR0 interrupts
-;   bsf     INTCON,GIE      ; enable all interrupts
+    bsf     INTCON,PEIE     ; enable peripheral interrupts (Timer0 is a peripheral)
+    bsf     INTCON,T0IE     ; enable TMR0 interrupts
+    bsf     INTCON,GIE      ; enable all interrupts
 
     return
 
@@ -682,6 +709,8 @@ setupPortB:
     movlw   b'11111111'                 ; first set all to inputs
     movwf   TRISB
 
+    bcf     TRISB,DEBUG_IO              ; debug pin
+
     ;bsf     TRISB, ???           ; input
     ;bcf     TRISB, ???           ; output
 
@@ -732,21 +761,6 @@ setupPortC:
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
-; handleLEDArrays
-;
-; Reads the A/D inputs for the current and voltage levels and displays them on the appropriate
-; LED arrays.
-;
-
-handleLEDArrays:
-
-
-    return
-
-; end of handleLEDArrays
-;--------------------------------------------------------------------------------------------------
-
-;--------------------------------------------------------------------------------------------------
 ; setupI2CSlave7BitMode
 ;
 ; Sets the MASTER SYNCHRONOUS SERIAL PORT (MSSP) MODULE to the I2C Slave mode using the 7 bit
@@ -769,16 +783,360 @@ setupI2CSlave7BitMode:
     bsf     SSPCON2,SEN     ; hold clock and halt further transmissions until CKP bit cleared
 
     banksel SSPCON1
-    bcf	SSPCON1,SSP1M0		; SSPM = b0110 ~ I2C Slave mode
-    bsf	SSPCON1,SSP1M1
-    bsf	SSPCON1,SSP1M2
-    bcf	SSPCON1,SSP1M3
+    bcf     SSPCON1,SSP1M0		; SSPM = b0110 ~ I2C Slave mode
+    bsf     SSPCON1,SSP1M1
+    bsf     SSPCON1,SSP1M2
+    bcf     SSPCON1,SSP1M3
 
     bsf	SSPCON1,SSPEN		;enables the MSSP module
 
     return
 
 ; end setupI2CSlave7BitMode
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; setupADConverter
+;
+; Sets up the A/D converter to convert Current and Voltage monitor inputs so they can be
+; represented on the LED arrays.
+;
+
+setupADConverter:
+
+    ;This code block configures the ADC for polling, Vdd and Vss references,
+    ; FOSC/16 clock
+
+    ; configure the A/D converter
+    ; bit 7 = 0 : left justify the result in ADRESH:ADRESL
+    ; bit 6 = 1 : bits 6-4 : A/D Conversion Clock Select bits
+    ; bit 5 = 0 :    101 -> FOSC/16
+    ; bit 4 = 1 : 
+    ; bit 3 = 0 : unused
+    ; bit 2 = 0 : unused
+    ; bit 1 = 0 : bits 1-0: A/D voltage reference source
+    ; bit 0 = 0 :    00 -> VREF+ connected to VDD
+
+    banksel ADCON1
+    movlw   b'01010000'         ;left justify, FOSC/16 clock
+    movwf   ADCON1              ;Vdd is Vref+
+
+    ; Current Monitor input channel/pin: AN3/RA4
+
+    banksel TRISA
+    bsf     TRISA,CURRENT_MONITOR_INPUT     ;set I/O pin to input
+
+    banksel ANSELA
+    bsf     ANSELA,CURRENT_MONITOR_INPUT    ;set I/O pin to analog
+
+    ; Voltage Monitor input channel/pin: AN11/RB5
+
+    banksel TRISB
+    bsf     TRISB,VOLTAGE_MONITOR_INPUT     ;set I/O pin to input
+
+    banksel ANSELB
+    bsf     ANSELB,VOLTAGE_MONITOR_INPUT    ;set I/O pin to analog
+
+    ; turn on A/D module and begin sampling Current Monitor input
+
+    banksel ADCON0
+    movlw   SAMPLE_CURRENT_INPUT
+    movwf   ADCON0
+
+    return
+
+; end of setupADConverter
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; handleADToLEDArrays
+;
+; Reads the A/D inputs for the current and voltage levels and displays them on the appropriate
+; LED arrays.
+;
+; If the adTrigger flag has not been set by a Timerx interrupt, function returns immediately.
+; If flag is set, it is cleared and the A/D processed.
+;
+; Each time the A/D is processed, it is for a different input channel / LED array:
+;  One pass handles the Current Monitor input and drives the Current LED array.
+;  The next pass handles the Voltage Monitor input and drives the Voltage LED array.
+;  The cycle repeats.
+;
+; Flag CURRENT_VOLTAGE_AD in flags determines which input is to be processed:
+;   0: current, 1: voltage
+;
+; If Current input is handled on a pass, then the A/D is set up to start sampling Voltage input
+; before exit and vice versa. This ensures the sampling circuit has ample time to settle before
+; the next call.
+;
+; The frequency of the adTrigger flag being set should be slow enough to allow the sampling circuit
+; to settle between processing.
+;
+
+handleADToLEDArrays:
+
+    ; do nothing until adTrigger bit 0 is set
+
+    banksel adTrigger
+    btfss   adTrigger,0
+    return
+
+    clrf    adTrigger           ; clear flag so interrupt routine can set it
+
+    ; if flag is 0, handle Current input else handle voltage input
+
+    banksel flags
+
+    btfss   flags,CURRENT_VOLTAGE_AD
+    goto    handleCurrentADToLED
+
+    goto    handleVoltageADToLED
+
+    return
+
+; end of handleADToLEDArrays
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; handleCurrentADToLED
+;
+; Converts the Current Monitor input voltage and represents its value on the Current LED Array.
+;
+; Sets up the A/D to begin sampling the Voltage input before exiting so it will be ready for
+; conversion on the next trigger.
+;
+
+handleCurrentADToLED:
+
+    bsf     flags,CURRENT_VOLTAGE_AD    ; handle Voltage input next time
+
+    banksel ADCON0
+    bsf     ADCON0,ADGO                 ;start conversion
+
+hcatl1:
+    btfsc   ADCON0,ADGO                 ;loop until conversion done
+    goto    hcatl1
+
+    ; turn on A/D module and begin sampling Voltage Monitor input so it will be
+    ; ready to convert on next call
+
+    banksel ADCON0
+    movlw   SAMPLE_VOLTAGE_INPUT
+    movwf   ADCON0
+
+   ; set the Current Array LEDs to reflect the value
+
+    goto    setCurrentLEDArrayFromADValue
+
+; end of handleCurrentADToLED
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; handleVoltageADToLED
+;
+; Converts the Voltage Monitor input voltage and represents its value on the Voltage LED Array.
+;
+; Sets up the A/D to begin sampling the Current input before exiting so it will be ready for
+; conversion on the next trigger.
+;
+
+handleVoltageADToLED:
+
+    bcf     flags,CURRENT_VOLTAGE_AD    ; handle Current input next time
+
+    banksel ADCON0
+    bsf     ADCON0,ADGO                 ;start conversion
+
+hvatl1:
+    btfsc   ADCON0,ADGO                 ;loop until conversion done
+    goto    hvatl1
+
+    ; turn on A/D module and begin sampling Current Monitor input so it will be
+    ; ready to convert on next call
+
+    banksel ADCON0
+    movlw   SAMPLE_CURRENT_INPUT
+    movwf   ADCON0
+
+   ; set the Voltage Array LEDs to reflect the value
+
+    goto    setVoltageLEDArrayFromADValue
+
+; end of handleVoltageADToLED
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; setCurrentLEDArrayFromADValue
+;
+; Sets the LEDs in the Current Monitor array to reflect the value in ADRESH.
+; It is assumed that the A/D value is left justified, thus the upper 8 bits will be used
+; and the lower 2 bits will be discarded.
+;
+
+setCurrentLEDArrayFromADValue:
+
+    banksel ADRESH              ;read upper 8 bits of result
+    movf    ADRESH,W            ; (result is left justified so this gets
+                                ;  the upper 8 bits, ignoring the lsbs)
+
+    banksel scratch0
+    movwf   scratch0            ; store the A/D value
+
+    ; compare the A/D value with different percentages of the max display value
+    ; the total range is divided into 6 possible subranges to account for 5 LEDs on for max and
+    ; 0 LEDs on for minimum
+    ;
+    ; all values rounded down:
+    ; 0  - 16%  : 0 LEDs on
+    ; 17 - 33%  : 1 LEDs on
+    ; 34 - 50%  : 2 LEDs on
+    ; 51 - 66%  : 3 LEDs on
+    ; 67 - 83%  : 4 LEDs on
+    ; 84 - 100% : 5 LEDs on
+    ;
+    ; sublw : k-(W)->(W)     C = 1 W <= k
+
+    movf    scratch0,W
+    sublw   (CURRENT_RANGE_INCREMENT * 1)
+    btfss   STATUS,C                            ; C = 1 W <= k
+    goto    criTest2
+
+    movlw   0xff                                ; all LEDs off
+    goto    setCurrentLEDArray
+
+criTest2:
+
+    movf    scratch0,W
+    sublw   (CURRENT_RANGE_INCREMENT * 2)
+    btfss   STATUS,C                            ; C = 1 W <= k
+    goto    criTest3
+
+    movlw   0xfe                                ; 1 LED(s) on
+    goto    setCurrentLEDArray
+
+criTest3:
+
+    movf    scratch0,W
+    sublw   (CURRENT_RANGE_INCREMENT * 3)
+    btfss   STATUS,C                            ; C = 1 W <= k
+    goto    criTest4
+
+    movlw   0xfc                                ; 2 LED(s) on
+    goto    setCurrentLEDArray
+
+criTest4:
+
+    movf    scratch0,W
+    sublw   (CURRENT_RANGE_INCREMENT * 4)
+    btfss   STATUS,C                            ; C = 1 W <= k
+    goto    criTest5
+
+    movlw   0xf8                                ; 3 LED(s) on
+    goto    setCurrentLEDArray
+
+criTest5:
+
+    movf    scratch0,W
+    sublw   (CURRENT_RANGE_INCREMENT * 5)
+    btfss   STATUS,C                            ; C = 1 W <= k
+    goto    criTest6
+
+    movlw   0xf0                                ; 4 LED(s) on
+    goto    setCurrentLEDArray
+
+criTest6:
+
+    movlw   0xe0                                ; 5 LED(s) on
+    goto    setCurrentLEDArray
+
+; end of setCurrentLEDArrayFromADValue
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; setVoltageLEDArrayFromADValue
+;
+; Sets the LEDs in the Voltage Monitor array to reflect the value in ADRESH.
+; It is assumed that the A/D value is left justified, thus the upper 8 bits will be used
+; and the lower 2 bits will be discarded.
+;
+
+setVoltageLEDArrayFromADValue:
+
+    banksel ADRESH              ;read upper 8 bits of result
+    movf    ADRESH,W            ; (result is left justified so this gets
+                                ;  the upper 8 bits, ignoring the lsbs)
+
+    banksel scratch0
+    movwf   scratch0            ; store the A/D value
+
+    ; compare the A/D value with different percentages of the max display value
+    ; the total range is divided into 6 possible subranges to account for 5 LEDs on for max and
+    ; 0 LEDs on for minimum
+    ;
+    ; all values rounded down:
+    ; 0  - 16%  : 0 LEDs on
+    ; 17 - 33%  : 1 LEDs on
+    ; 34 - 50%  : 2 LEDs on
+    ; 51 - 66%  : 3 LEDs on
+    ; 67 - 83%  : 4 LEDs on
+    ; 84 - 100% : 5 LEDs on
+    ;
+    ; sublw : k-(W)->(W)     C = 1 W <= k
+
+    movf    scratch0,W
+    sublw   (VOLTAGE_RANGE_INCREMENT * 1)
+    btfss   STATUS,C                            ; C = 1 W <= k
+    goto    vriTest2
+
+    movlw   0xff                                ; all LEDs off
+    goto    setVoltageLEDArray
+
+vriTest2:
+
+    movf    scratch0,W
+    sublw   (VOLTAGE_RANGE_INCREMENT * 2)
+    btfss   STATUS,C                            ; C = 1 W <= k
+    goto    vriTest3
+
+    movlw   0xfe                                ; 1 LED(s) on
+    goto    setVoltageLEDArray
+
+vriTest3:
+
+    movf    scratch0,W
+    sublw   (VOLTAGE_RANGE_INCREMENT * 3)
+    btfss   STATUS,C                            ; C = 1 W <= k
+    goto    vriTest4
+
+    movlw   0xfc                                ; 2 LED(s) on
+    goto    setVoltageLEDArray
+
+vriTest4:
+
+    movf    scratch0,W
+    sublw   (VOLTAGE_RANGE_INCREMENT * 4)
+    btfss   STATUS,C                            ; C = 1 W <= k
+    goto    vriTest5
+
+    movlw   0xf8                                ; 3 LED(s) on
+    goto    setVoltageLEDArray
+
+vriTest5:
+
+    movf    scratch0,W
+    sublw   (VOLTAGE_RANGE_INCREMENT * 5)
+    btfss   STATUS,C                            ; C = 1 W <= k
+    goto    vriTest6
+
+    movlw   0xf0                                ; 4 LED(s) on
+    goto    setVoltageLEDArray
+
+vriTest6:
+
+    movlw   0xe0                                ; 5 LED(s) on
+    goto    setVoltageLEDArray
+
+; end of setVoltageLEDArrayFromADValue
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
@@ -1389,7 +1747,7 @@ clearSSPOV:
 ; to the interrupt handler so that it will be handled.
 ;
 ; NOTE NOTE NOTE
-; It is important to use no (or very few) subroutine calls.  The stack is only 8 deep and
+; It is important to use no (or very few) subroutine calls.  The stack is only 16 deep and
 ; it is very bad for the interrupt routine to use it.
 ;
 
@@ -1397,18 +1755,12 @@ handleInterrupt:
 
 	btfsc 	INTCON,T0IF     		; Timer0 overflow interrupt?
 	goto 	handleTimer0Interrupt	; YES, so process Timer0
-           
-; Not used at this time to make interrupt handler as small as possible.
-;	btfsc 	INTCON, RBIF      		; NO, Change on PORTB interrupt?
-;	goto 	portB_interrupt       	; YES, Do PortB Change thing
 
 INT_ERROR_LP1:		        		; NO, do error recovery
 	;GOTO INT_ERROR_LP1      		; This is the trap if you enter the ISR
                                		; but there were no expected interrupts
 
-endISR:
-
-	retfie                  	; Return and enable interrupts
+	retfie                  ; return and enable interrupts
 
 ; end of handleInterrupt
 ;--------------------------------------------------------------------------------------------------
@@ -1416,7 +1768,15 @@ endISR:
 ;--------------------------------------------------------------------------------------------------
 ; handleTimer0Interrupt
 ;
-; This function is called when the Timer0 register overflows.
+; This function is called when the Timer 0 register overflows.
+;
+; The prescaler is set to 1:256.
+; 16 Mhz Fosc = 4 Mhz instruction clock (CLKOUT)
+; 4,000,000 Hz / 256 = 15,625 Hz;  15,625 Hz / 156 = 100 Hz
+; Interrupt needed every 156 counts of TMR0 -- set to 255-156.
+;
+; Interrupt triggered when 8 bit TMR0 register overflows, so subtract desired number of increments
+; between interrupts from 255 for value to store in register.
 ;
 ; NOTE NOTE NOTE
 ; It is important to use no (or very few) subroutine calls.  The stack is only 8 deep and
@@ -1425,10 +1785,27 @@ endISR:
 
 handleTimer0Interrupt:
 
-	bcf 	INTCON,T0IF     ; clear the Timer0 overflow interrupt flag
+	bcf 	INTCON,TMR0IF     ; clear the Timer0 overflow interrupt flag
 
+    ; reload the timer -- see notes in function header
 
-    goto    endISR
+    movlw   (.255 - .156)
+    banksel TMR0
+    movwf   TMR0
+
+;debug mks -- output a pulse to verify the timer0 period
+    banksel DEBUG_IO_P
+    bsf     DEBUG_IO_P,DEBUG_IO
+    bcf     DEBUG_IO_P,DEBUG_IO
+;debug mks end
+
+    ; trigger the next A/D conversion
+
+    movlw   0x01
+    banksel adTrigger
+    movwf   adTrigger
+
+	retfie                  ; return and enable interrupts
 
 ; end of handleTimer0Interrupt
 ;--------------------------------------------------------------------------------------------------
