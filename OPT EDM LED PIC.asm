@@ -888,7 +888,7 @@ handleADToLEDArrays:
     banksel flags
 
     btfss   flags,CURRENT_VOLTAGE_AD
-    goto    handleCurrentADToLED
+    goto    handleInvVoltageToCurrentLED
 
     goto    handleVoltageADToLED
 
@@ -1050,6 +1050,83 @@ criTest6:
     goto    setCurrentLEDArray
 
 ; end of setCurrentLEDArrayFromADValue
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; handleInvVoltageToCurrentLED
+;
+; Sets Current LED array to the inverse of the Voltage LED array.
+; See setCurrentLEDArrayInverseToLATC for more details.
+;
+; Sets up the A/D to begin sampling the Voltage input before exiting so it will be ready for
+; conversion on the next trigger.
+;
+
+handleInvVoltageToCurrentLED:
+
+    bsf     flags,CURRENT_VOLTAGE_AD    ; handle Voltage input next time
+
+    ; turn on A/D module and begin sampling Voltage Monitor input so it will be
+    ; ready to convert on next call
+
+    banksel ADCON0
+    movlw   SAMPLE_VOLTAGE_INPUT
+    movwf   ADCON0
+
+    ; set Current LEDs to the opposite of the Voltage LEDs
+
+    goto    setCurrentLEDArrayInverseToLATC
+
+; end of handleInvVoltageToCurrentLED
+;--------------------------------------------------------------------------------------------------
+
+;--------------------------------------------------------------------------------------------------
+; setCurrentLEDArrayInverseToLATC
+;
+; Sets the LEDs in the Current Monitor array to the opposite of whatever is currently
+; in the LATC register.
+;
+; It is assumed that the LATC register contains the value previously written to the voltage
+; LEDs. Whatever LEDs were turned on for that array will be turned off for the Current array and
+; vice versa.
+;
+; This is used to mimic actually reading the current monitor voltage input. It is assumed that the
+; cutting current flow will be inverse to the voltage level. This is done because the boards
+; could not read very low current voltage input at the digital pot -- it had to be scaled low to
+; protect the input from cases where the high voltage side was shorted to the electrode when the
+; electrode was not being pulsed (due to bad MosFets, etc.). This would have driven the input to
+; nearly 100 volts and blown up the digital pot. The very first boards were able to read the very
+; voltage because they used a different chip to translate the voltage to LED display.
+;
+; UPDATE: The board might CAN read the values -- the lowest 2 bits are being discarded. Haven't
+; changed the code to test this yet! It would only give 47 counts for max value, but might still
+; work if noise isn't a problem. On the other hand, using the inverse value eliminates a
+; calibration step required by the current input. Also, using the FVR as +ADRef with the FVR set to
+; 1.024V would increase the counts to 200 -- VERY close to that already used for the Voltage
+; LED array. Would noise be a problem? Would have to switch back and forth between FVR and
+; VDD for the +ADRef between conversions?
+;
+
+setCurrentLEDArrayInverseToLATC:
+
+    banksel LEDS            ; Port C latch
+
+    clrw                    ; start with all cleared in new value
+
+    btfss   LEDS,LED0       ; set opposite bit for each set in scratch0
+    bsf     WREG, LED4
+    btfss   LEDS,LED1
+    bsf     WREG, LED3
+    btfss   LEDS,LED2
+    bsf     WREG, LED2
+    btfss   LEDS,LED3
+    bsf     WREG, LED1
+    btfss   LEDS,LED4
+    bsf     WREG, LED0
+
+    goto    setCurrentLEDArray
+
+; end of setCurrentLEDArrayInverseToLATC
 ;--------------------------------------------------------------------------------------------------
 
 ;--------------------------------------------------------------------------------------------------
