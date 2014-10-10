@@ -27,7 +27,7 @@ OS_CURRENT="$(shell uname -s)"
 MP_AS="C:\Program Files (x86)\Microchip\MPLABX\mpasmx\mpasmx.exe"
 MP_LD="C:\Program Files (x86)\Microchip\MPLABX\mpasmx\mplink.exe"
 MP_AR="C:\Program Files (x86)\Microchip\MPLABX\mpasmx\mplib.exe"
-DEP_GEN=${MP_JAVA_PATH}java -jar "C:/Program Files (x86)/Microchip/MPLABX/mplab_ide/mplab_ide/modules/../../bin/extractobjectdependencies.jar" 
+DEP_GEN=${MP_JAVA_PATH}java -jar "C:/Program Files (x86)/Microchip/MPLABX/mplab_ide/mplab_ide/modules/../../bin/extractobjectdependencies.jar"
 # MP_CC_DIR is not defined
 # MP_CPPC_DIR is not defined
 # MP_BC_DIR is not defined

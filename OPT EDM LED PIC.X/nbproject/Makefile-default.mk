@@ -45,17 +45,17 @@ OBJECTDIR=build/${CND_CONF}/${IMAGE_TYPE}
 DISTDIR=dist/${CND_CONF}/${IMAGE_TYPE}
 
 # Source Files Quoted if spaced
-SOURCEFILES_QUOTED_IF_SPACED=
+SOURCEFILES_QUOTED_IF_SPACED="../OPT EDM LED PIC.asm"
 
 # Object Files Quoted if spaced
-OBJECTFILES_QUOTED_IF_SPACED=
-POSSIBLE_DEPFILES=
+OBJECTFILES_QUOTED_IF_SPACED="${OBJECTDIR}/_ext/1472/OPT EDM LED PIC.o"
+POSSIBLE_DEPFILES="${OBJECTDIR}/_ext/1472/OPT EDM LED PIC.o.d"
 
 # Object Files
-OBJECTFILES=
+OBJECTFILES=${OBJECTDIR}/_ext/1472/OPT\ EDM\ LED\ PIC.o
 
 # Source Files
-SOURCEFILES=
+SOURCEFILES=../OPT EDM LED PIC.asm
 
 
 CFLAGS=
@@ -72,14 +72,33 @@ LDLIBSOPTIONS=
 FIXDEPS=fixDeps
 
 .build-conf:  ${BUILD_SUBPROJECTS}
-	${MAKE} ${MAKE_OPTIONS} -f nbproject/Makefile-default.mk dist/${CND_CONF}/${IMAGE_TYPE}/OPT_EDM_LED_PIC.X.${IMAGE_TYPE}.${OUTPUT_SUFFIX}
+ifneq ($(INFORMATION_MESSAGE), )
+	@echo $(INFORMATION_MESSAGE)
+endif
+	${MAKE}  -f nbproject/Makefile-default.mk dist/${CND_CONF}/${IMAGE_TYPE}/OPT_EDM_LED_PIC.X.${IMAGE_TYPE}.${OUTPUT_SUFFIX}
 
 MP_PROCESSOR_OPTION=16f1459
-MP_LINKER_DEBUG_OPTION=
+MP_LINKER_DEBUG_OPTION= 
 # ------------------------------------------------------------------------------------
 # Rules for buildStep: assemble
 ifeq ($(TYPE_IMAGE), DEBUG_RUN)
+${OBJECTDIR}/_ext/1472/OPT\ EDM\ LED\ PIC.o: ../OPT\ EDM\ LED\ PIC.asm  nbproject/Makefile-${CND_CONF}.mk
+	@${MKDIR} ${OBJECTDIR}/_ext/1472 
+	@${RM} ${OBJECTDIR}/_ext/1472/OPT\ EDM\ LED\ PIC.o.d 
+	@${RM} "${OBJECTDIR}/_ext/1472/OPT EDM LED PIC.o" 
+	@${FIXDEPS} dummy.d -e "${OBJECTDIR}/_ext/1472/OPT EDM LED PIC.err" $(SILENT) -c ${MP_AS} $(MP_EXTRA_AS_PRE) -d__DEBUG -d__MPLAB_DEBUGGER_PK3=1 -q -p$(MP_PROCESSOR_OPTION)  -l\"${OBJECTDIR}/_ext/1472/OPT EDM LED PIC.lst\" -e\"${OBJECTDIR}/_ext/1472/OPT EDM LED PIC.err\" $(ASM_OPTIONS)   -o\"${OBJECTDIR}/_ext/1472/OPT EDM LED PIC.o\" \"../OPT EDM LED PIC.asm\" 
+	@${DEP_GEN} -d "${OBJECTDIR}/_ext/1472/OPT EDM LED PIC.o"
+	@${FIXDEPS} "${OBJECTDIR}/_ext/1472/OPT EDM LED PIC.o.d" $(SILENT) -rsi ${MP_AS_DIR} -c18 
+	
 else
+${OBJECTDIR}/_ext/1472/OPT\ EDM\ LED\ PIC.o: ../OPT\ EDM\ LED\ PIC.asm  nbproject/Makefile-${CND_CONF}.mk
+	@${MKDIR} ${OBJECTDIR}/_ext/1472 
+	@${RM} ${OBJECTDIR}/_ext/1472/OPT\ EDM\ LED\ PIC.o.d 
+	@${RM} "${OBJECTDIR}/_ext/1472/OPT EDM LED PIC.o" 
+	@${FIXDEPS} dummy.d -e "${OBJECTDIR}/_ext/1472/OPT EDM LED PIC.err" $(SILENT) -c ${MP_AS} $(MP_EXTRA_AS_PRE) -q -p$(MP_PROCESSOR_OPTION)  -l\"${OBJECTDIR}/_ext/1472/OPT EDM LED PIC.lst\" -e\"${OBJECTDIR}/_ext/1472/OPT EDM LED PIC.err\" $(ASM_OPTIONS)   -o\"${OBJECTDIR}/_ext/1472/OPT EDM LED PIC.o\" \"../OPT EDM LED PIC.asm\" 
+	@${DEP_GEN} -d "${OBJECTDIR}/_ext/1472/OPT EDM LED PIC.o"
+	@${FIXDEPS} "${OBJECTDIR}/_ext/1472/OPT EDM LED PIC.o.d" $(SILENT) -rsi ${MP_AS_DIR} -c18 
+	
 endif
 
 # ------------------------------------------------------------------------------------
