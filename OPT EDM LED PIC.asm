@@ -491,8 +491,6 @@ initializeOutputs:
 ;--------------------------------------------------------------------------------------------------
 ; setupClock
 ;
-; Saves the flags value to eeprom.
-;
 ; Sets up the system clock source and frequency.
 ;
 ; Assumes clock related configuration bits are set as follows:
