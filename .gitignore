@@ -1,5 +1,33 @@
+# MPLAB X IDE Git Ignore
+# Version: 1.1
+# Authors: Hunter & Mike Schoonover
+#
+# Helpful Git notes:
+#
+# In Git Bash, use "git config core.autocrlf false" to avoid unwanted changes, especially to Java source files.
+# You must do this for each project.
+#
+#
+# Two important files for the PIC IDE are not tracked:
+#	nbproject/project.xml
+#	nbproject/configurations.xml
+#
+# When a new user clones the project, the above files must be transferred outside of git.
+#
+
 archive/
 Distributions/
+build/
+nbproject/Package-default.bash
+nbproject/Makefile-default.mk
+nbproject/Makefile-local-default.mk
+nbproject/Makefile-impl.mk
+nbproject/Makefile-variables.mk
+nbproject/Makefile-genesis.properties
+nbproject/private/
+nbproject/private/SuppressibleMessageMemo.properties
+#nbproject/project.xml
+#nbproject/configurations.xml
 *.mch
 *.MCH
 *.o
@@ -20,5 +48,5 @@ Distributions/
 *.MCS
 *.mcw
 *.MCW
-OPT EDM Main PIC 2.X/build
-OPT EDM Main PIC 2.X/*.fil
+!OriginalHexFiles/*.*
+!IDE Project File Copies/*.*

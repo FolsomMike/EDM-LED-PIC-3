@@ -1352,7 +1352,7 @@ handleI2CCommand:
 
 ; jump to handle receive or transmit request
 ; if bit 0 of the address byte is 0, the master is sending and this PIC is receiving
-; if bit 1 is 1, the master is receiving and this PIC is sending
+; if bit 0 is 1, the master is receiving and this PIC is sending
 
     btfss   WREG,0
     goto    handleI2CReceive
@@ -1377,7 +1377,7 @@ handleI2CReceive:
     call    waitForSSP1IFHighOrStop     ; wait for byte or stop condition to be received
 
     btfss   STATUS,Z
-    return                              ; bail out if stop condition received
+    goto    cleanUpAndReturn            ; bail out when stop condition received
 
     call    readI2CByteAndPrepForNext   ; get the byte just received
 
@@ -1416,12 +1416,29 @@ handleI2CReceive:
 ; Handles the transmission of data to the master on the I2C bus.
 ;
 ; The command byte specifying what data should be sent should have already been received in the
-; previous transmission from the master and stored in masterCommand variable.
+; previous transmission from the master and stored in the masterCommand variable.
+;
+; I2C Read Protocol
+;
+; When reading some devices, the Master sends commands and/or address bytes with a write operation,
+; performs a restart, sends a read command, then reads the data from the device. The only thing
+; a restart does over a stop and start operation is the restart allows the Master to maintain
+; control of the bus...another device cannot take it over.
+;
+; For the Multi-IO Board, there is only one master so it does not need to retain control. In order
+; to read data, the Master writes a command and/or further addressing information to the device in
+; the normal write protocol, ending with a stop signal. The Slave will save the information and
+; will expect that information to apply to the next read operation. The Master will then send a
+; normal read command to read the desired data. The Slave will know what information to send based
+; on the data sent in the previous write command.
 ;
 
 handleI2CTransmit:
 
-    return                      ; bail out if stop condition received
+
+
+
+    return
 
 ; end handleI2CTransmit
 ;--------------------------------------------------------------------------------------------------
@@ -1709,7 +1726,8 @@ wfsh1:
 ;--------------------------------------------------------------------------------------------------
 ; waitForSSP1IFHighOrStop
 ;
-; Waits in a loop for SSP1IF bit in register PIR1 to go high.
+; Waits in a loop for SSP1IF bit in register PIR1 to go high or P (stop) bit in SSP1STAT to go
+; high.
 ;
 ; On exit:
 ;
